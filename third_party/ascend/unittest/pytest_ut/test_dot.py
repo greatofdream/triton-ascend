@@ -125,7 +125,6 @@ typelist = [
 ]
 
 
-@pytest.mark.skip(reason="not supported after the NPUIR is updated in April, and will be fixed later")
 @pytest.mark.parametrize("B, C, D", testlist2)
 @pytest.mark.parametrize("sigtype", typelist)
 def test_dot_2(restore_npu_hf32_setting, sigtype, B, C, D):
@@ -137,9 +136,6 @@ def test_dot_2(restore_npu_hf32_setting, sigtype, B, C, D):
     test_common.validate_cmp(sigtype, z, z_ref)
 
 
-@pytest.mark.xfail(
-    reason="Temporarily disabled: TA backend does not support allow_tf32 yet. Will be fixed in follow-up."
-)
 @pytest.mark.parametrize("B, C, D", testlist2)
 @pytest.mark.parametrize("sigtype", typelist)
 def test_dot_2_allow_tf32(restore_npu_hf32_setting, sigtype, B, C, D):
@@ -151,7 +147,6 @@ def test_dot_2_allow_tf32(restore_npu_hf32_setting, sigtype, B, C, D):
     test_common.validate_cmp(sigtype, z, z_ref)
 
 
-@pytest.mark.skip(reason="not supported after the NPUIR is updated in April, and will be fixed later")
 @pytest.mark.parametrize("B, C, D", testlist2)
 @pytest.mark.parametrize("sigtype", typelist)
 def test_dot_2_input_tf32(restore_npu_hf32_setting, sigtype, B, C, D):
