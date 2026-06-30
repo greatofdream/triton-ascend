@@ -10,6 +10,7 @@
 #include "triton/Dialect/Triton/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Target/LLVMIR/Passes.h"
+#include "triton/Tools/PluginUtils.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -99,4 +100,19 @@ void init_triton_passes(py::module &&m) {
   init_triton_passes_ttir(m.def_submodule("ttir"));
   init_triton_passes_ttgpuir(m.def_submodule("ttgpuir"));
   init_triton_passes_llvmir(m.def_submodule("llvmir"));
+
+  // Register pass entry points from plugins (e.g. triton-distributed).
+  // Each plugin pass becomes passes.plugin.add_<name>(pm, args).
+  // Hook is installed here so plugins imported later still register.
+  auto plugin_m = m.def_submodule("plugin");
+  triton::plugin::set_pass_registration_hook(
+      [plugin_m](const triton::plugin::PassInfo &pass) {
+        std::string name = std::string("add_") + pass.name;
+        auto cb = pass.addPass;
+        plugin_m.def(
+            name.c_str(),
+            [cb](mlir::PassManager &pm,
+                 const std::vector<std::string> &args) { cb(&pm, args); },
+            py::arg("pm"), py::arg("args") = std::vector<std::string>{});
+      });
 }

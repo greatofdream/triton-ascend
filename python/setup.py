@@ -584,6 +584,13 @@ class CMakeBuild(build_ext):
         subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
         subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
 
+        # Copy cmake/ so downstream packages (triton-dist) can find
+        # llvm-hash.txt, FindLLVM.cmake, etc. without a submodule.
+        cmake_src = os.path.join(self.base_dir, "cmake")
+        cmake_dst = os.path.join(os.path.dirname(extdir), "cmake")
+        if os.path.exists(cmake_src):
+            shutil.copytree(cmake_src, cmake_dst, dirs_exist_ok=True)
+
 
 nvidia_version_path = os.path.join(get_base_dir(), "cmake", "nvidia-toolchain-version.json")
 with open(nvidia_version_path, "r") as nvidia_version_file:

@@ -30,6 +30,7 @@
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
+#include "triton/Tools/PluginUtils.h"
 #include "llvm/Support/SourceMgr.h"
 
 #include "ir.h"
@@ -254,6 +255,14 @@ void init_triton_ir(py::module &&m) {
     registerBuiltinDialectTranslation(registry);
     registerLLVMDialectTranslation(registry);
     mlir::LLVM::registerInlinerInterface(registry);
+    // Register dialects from plugins (e.g. triton-distributed's
+    // DistributedDialect). Plugins must have been imported before this
+    // function is called (i.e. before the first kernel compilation).
+    for (auto *info : triton::plugin::get_registered_plugins()) {
+      for (int i = 0; i < info->numDialects; ++i) {
+        info->dialects[i].registerDialect(&registry);
+      }
+    }
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });
@@ -1753,6 +1762,24 @@ void init_triton_ir(py::module &&m) {
           throw std::runtime_error("PassManager::run failed");
       },
       py::call_guard<py::gil_scoped_release>());
+
+  // Install hook so plugins loaded via Python import (libtriton_dist etc.)
+  // can push their ops onto this module's TritonOpBuilder pybind class.
+  // Flushes any plugins registered before init_triton_ir ran.
+  triton::plugin::set_op_registration_hook(
+      [](const triton::plugin::OpInfo &op) {
+        auto *builderClass = ir::getBuilderClass();
+        if (!builderClass)
+          return;
+        builderClass->def(
+            op.name,
+            [cb = op.addOp](TritonOpBuilder &self,
+                            std::vector<Value> args) {
+              args.insert(args.begin(), Value());
+              cb(self, args);
+              return args[0];
+            });
+      });
 }
 
 void init_triton_env_vars(py::module &m) {
