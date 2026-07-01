@@ -118,6 +118,19 @@ void init_gluon_passes(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_inliner", gluon::createGluonInline);
 }
 
+void init_plugin_passes(py::module &&m) {
+  for (const auto &plugin : mlir::triton::plugin::loadPlugins()) {
+    for (const auto &pass : plugin.listPasses()) {
+      std::string name = std::string("add_") + pass.name;
+      m.def(
+          name.c_str(),
+          [pass](mlir::PassManager &pm,
+                 const std::vector<std::string> &args) { pass.addPass(&pm, args); },
+          py::arg("pm"), py::arg("args") = std::vector<std::string>{});
+    }
+  }
+}
+
 void init_triton_passes(py::module &&m) {
   init_triton_analysis(m.def_submodule("analysis"));
   init_triton_passes_common(m.def_submodule("common"));
@@ -127,12 +140,13 @@ void init_triton_passes(py::module &&m) {
   init_triton_passes_llvmir(m.def_submodule("llvmir"));
   init_gluon_passes(m.def_submodule("gluon"));
 
-  // Register pass entry points from plugins (e.g. triton-distributed).
-  // Each plugin pass becomes passes.plugin.add_<name>(pm, args).
-  // Hook is installed here so plugins imported later still register.
+  // Register pass entry points from plugins.
+  // pull-based: loadPlugins() via init_plugin_passes (TRITON_PLUGIN_PATHS)
+  // push-based: set_pass_registration_hook (Python import / triton_register_plugin)
   auto plugin_m = m.def_submodule("plugin");
+  init_plugin_passes(std::move(plugin_m));
   mlir::triton::plugin::set_pass_registration_hook(
-      [plugin_m](const mlir::triton::plugin::PassInfo &pass) {
+      [plugin_m](const mlir::triton::plugin::PassInfo &pass) mutable {
         std::string name = std::string("add_") + pass.name;
         auto cb = pass.addPass;
         plugin_m.def(
