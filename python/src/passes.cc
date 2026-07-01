@@ -105,8 +105,8 @@ void init_triton_passes(py::module &&m) {
   // Each plugin pass becomes passes.plugin.add_<name>(pm, args).
   // Hook is installed here so plugins imported later still register.
   auto plugin_m = m.def_submodule("plugin");
-  triton::plugin::set_pass_registration_hook(
-      [plugin_m](const triton::plugin::PassInfo &pass) {
+  mlir::triton::plugin::set_pass_registration_hook(
+      [plugin_m](const mlir::triton::plugin::PassInfo &pass) {
         std::string name = std::string("add_") + pass.name;
         auto cb = pass.addPass;
         plugin_m.def(

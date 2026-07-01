@@ -1,106 +1,250 @@
-#pragma once
+// Defines the external and internal interface for Triton plugins.
+//
+// This is largely meant to follow the plugin pattern outlined in upstream MLIR
+// ([DialectPlugin], [PassPlugin]); use those as references for further
+// additions.
+//
+// [DialectPlugin]:
+// https://github.com/llvm/llvm-project/blob/80d6e0b8/mlir/include/mlir/Tools/Plugins/DialectPlugin.h
+// [PassPlugin]:
+// https://github.com/llvm/llvm-project/blob/80d6e0b8/mlir/include/mlir/Tools/Plugins/PassPlugin.h
 
-#include <functional>
+#ifndef TRITON_PLUGIN_UTILS_H
+#define TRITON_PLUGIN_UTILS_H
+
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Tools/Plugins/DialectPlugin.h"
+#include "python/src/ir.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/DynamicLibrary.h"
+#include "llvm/Support/Error.h"
+#include <cstdint>
 #include <vector>
 
-namespace mlir {
-class PassManager;
-class DialectRegistry;
-class Value;
-} // namespace mlir
+// triton-ascend 3.2.2 does not generate triton/Version.h; upstream 3.7 does.
+// Define TRITON_VERSION here so version checks compile. When triton-ascend
+// rebases to 3.7, this define can be dropped in favor of the real header.
+#ifndef TRITON_VERSION
+#define TRITON_VERSION "3.2.2"
+#endif
 
-class TritonOpBuilder;
-
-namespace triton::plugin {
-
-// API version; bumped on ABI-breaking changes. Mirrors triton 3.7.
+/// Identifies the API version understood by this plugin.
+///
+/// This version should be incremented for ABI-breaking changes in the structs
+/// below; we check this version when loading a new \c TritonPlugin. See
+/// similar: [MLIR_PLUGIN_API_VERSION].
+///
+/// [MLIR_PLUGIN_API_VERSION]:
+/// https://github.com/llvm/llvm-project/blob/80d6e0b8/mlir/include/mlir/Tools/Plugins/PassPlugin.h#L32
 #define TRITON_PLUGIN_API_VERSION 2
 
-// Force-export symbols so extensions linked against libtriton.so can resolve
-// them even when libtriton is built with -fvisibility=hidden /
-// --exclude-libs,ALL.
-#define TRITON_PLUGIN_API __attribute__((visibility("default")))
+/// Use this helper macro on the public entry point for a Triton plugin.
+#define TRITON_PLUGIN_API extern "C" __attribute__((visibility("default")))
 
-// Callbacks invoked by the main module to apply plugin-provided ops / passes
-// / dialects. Mirrors triton 3.7's PluginUtils.h callback types.
-using AddOpCallback = void (*)(TritonOpBuilder &,
-                               std::vector<mlir::Value> &);
+namespace mlir::triton::plugin {
+
+// Types for plugin callback functions.
 using AddPassCallback = void (*)(mlir::PassManager *,
                                  const std::vector<std::string> &);
+using RegisterPassCallback = void (*)();
 using RegisterDialectCallback = void (*)(mlir::DialectRegistry *);
+using AddOpCallback = void (*)(TritonOpBuilder &, std::vector<mlir::Value> &);
 
-// Metadata for a single op / pass / dialect provided by a plugin.
+/// Information provided by a plugin for loading its passes.
+struct PassInfo {
+  const char *name;
+  const char *version;
+  AddPassCallback addPass;
+  RegisterPassCallback registerPass;
+};
+
+/// Information provided by a plugin for loading its dialects.
+struct DialectInfo {
+  const char *name;
+  const char *version;
+  RegisterDialectCallback registerDialect;
+};
+
+/// Information provided by a plugin for loading its custom ops.
 struct OpInfo {
   const char *name;
   AddOpCallback addOp;
 };
 
-struct PassInfo {
-  const char *name;
-  AddPassCallback addPass;
-};
-
-struct DialectInfo {
-  RegisterDialectCallback registerDialect;
-};
-
-// Container returned by a plugin's tritonGetPluginInfo() entry point.
-// Layout follows triton 3.7 so a plugin built against this header can be
-// loaded by triton 3.7's loadPlugins() unchanged (given TRITON_PLUGIN_PATHS).
+/// Container for all plugin information; this is returned by the plugin
+/// library's public entry point, @ref tritonGetPluginInfo.
 struct PluginInfo {
-  int apiVersion;
-  const char *name;
-  const char *version;
-  const OpInfo *ops;
-  int numOps;
-  const PassInfo *passes;
-  int numPasses;
-  const DialectInfo *dialects;
-  int numDialects;
+  /// The API version used by this plugin, see \c TRITON_PLUGIN_API_VERSION.
+  uint32_t apiVersion;
+
+  /// A meaningful name of the plugin.
+  const char *pluginName;
+  /// The version of the plugin.
+  const char *pluginVersion;
+
+  /// The list of passes.
+  PassInfo *passes;
+  size_t numPasses;
+
+  /// The list of dialects.
+  DialectInfo *dialects;
+  size_t numDialects;
+
+  /// The list of custom ops.
+  OpInfo *ops;
+  size_t numOps;
+
+  /// Triton Version
   const char *tritonVersion;
 };
 
-// Standard entry point a plugin exports. libtriton provides a weak default
-// (returns nullptr) so extensions can be absent; a real plugin overrides it
-// with a strong symbol.
-extern "C" TRITON_PLUGIN_API PluginInfo *tritonGetPluginInfo();
+/// A helper structure for storing information about a pass registered by a
+/// plugin.
+struct Pass {
+  Pass(const char *name, AddPassCallback addPass)
+      : name(name), addPass(addPass) {}
 
-// --- Extension-facing API (called by libtriton_dist etc.) ---
+  const char *name;
+  const AddPassCallback addPass;
+};
+
+/// A helper structure for storing information about a pass registered by a
+/// plugin.
+struct Op {
+  Op(const char *name, AddOpCallback addOp) : name(name), addOp(addOp) {}
+
+  const char *name;
+  const AddOpCallback addOp;
+};
+
+/// A loaded Triton plugin.
+///
+/// An instance of this class wraps a loaded dialect plugin and gives access
+/// to its interface defined by the \c PluginInfo it exposes.
+class TritonPlugin {
+public:
+  /// Attempts to load a Triton plugin from a given file.
+  ///
+  /// \returns Returns an error if either the library cannot be found or
+  /// loaded, there is no public entry point, or the plugin implements the
+  /// wrong API version.
+  static llvm::Expected<TritonPlugin> load(const std::string &filename);
+
+  /// Get the filename of the loaded plugin.
+  llvm::StringRef getFilename() const { return filename; }
+
+  /// Get the plugin name.
+  llvm::StringRef getPluginName() const { return info->pluginName; }
+
+  /// Get the plugin version.
+  llvm::StringRef getPluginVersion() const { return info->pluginVersion; }
+
+  /// Get the plugin API version.
+  uint32_t getAPIVersion() const { return info->apiVersion; }
+
+  /// List the available passes; this allows us invoke the \c AddPassCallback
+  /// while knowing the pass name. This function will crash with an LLVM usage
+  /// error if the plugin provides invalid \c PluginInfo.
+  const std::vector<Pass> listPasses() const;
+
+  /// Invoke the \c RegisterPassCallback for each pass registered in this
+  /// plugin. This function will crash with an LLVM usage
+  /// error if the plugin provides invalid \c PluginInfo.
+  void registerPasses() const;
+
+  /// Invoke the \c RegisterDialectCallback for each dialect registered in
+  /// this plugin. This function will crash with an LLVM usage
+  /// error if the plugin provides invalid \c PluginInfo.
+  void registerDialects(DialectRegistry &dialectRegistry) const;
+
+  /// List the custom operations; this allows us invoke the \c
+  /// AddOpCallback while knowing the operation name. This function will crash
+  /// with an LLVM usage error if the plugin provides invalid \c PluginInfo.
+  const std::vector<Op> listOps() const;
+
+private:
+  TritonPlugin(const std::string &filename,
+               const llvm::sys::DynamicLibrary &library)
+      : filename(filename), library(library), info() {}
+
+  std::string filename;
+  llvm::sys::DynamicLibrary library;
+  PluginInfo *info;
+};
+
+/// Load all plugins specified in the `TRITON_PLUGIN_PATHS` environment
+/// variable. This variable should contain a colon-separated list of paths to
+/// plugin shared libraries.
+///
+/// \returns Returns the list of successfully loaded plugins. If any plugin
+/// fails to load, it crashes with an LLVM usage error.
+const std::vector<TritonPlugin> &loadPlugins();
+
+// ---------------------------------------------------------------------------
+// Push-based registration extension (not in upstream triton 3.7).
 //
-// Push a plugin's PluginInfo into the main module. If the main module's
-// registration hook is already set (init_triton_ir has run), the ops / passes
-// / dialects are applied immediately. Otherwise the request is queued and
-// flushed when the hook is installed.
+// Upstream uses a pull model: loadPlugins() dlopens .so files listed in
+// TRITON_PLUGIN_PATHS and calls tritonGetPluginInfo(). We also need a push
+// model for extensions loaded via Python `import` (which triggers a pybind
+// PYBIND11_MODULE): the extension calls triton_register_plugin() to push its
+// PluginInfo into the main module, where per-category hooks (installed by
+// init_triton_ir / init_triton_passes / load_dialects) apply the ops / passes
+// / dialects to the main module's pybind classes / pass manager / dialect
+// registry.
 //
-// This lets an extension be loaded via Python `import` (which triggers its
-// PYBIND11_MODULE) without requiring TRITON_PLUGIN_PATHS / loadPlugins()
-// dlopen path — while keeping the tritonGetPluginInfo() entry point
-// compatible with triton 3.7's standard plugin mechanism for future
-// migration.
-TRITON_PLUGIN_API void triton_register_plugin(PluginInfo *info);
+// Both models share the same PluginInfo / OpInfo / PassInfo / DialectInfo
+// structs and the same tritonGetPluginInfo() entry point, so an extension
+// built for the push model can also be loaded by upstream's pull model once
+// TRITON_PLUGIN_PATHS points at it.
+// ---------------------------------------------------------------------------
 
-// --- Main-module-facing API (called by python/src/ir.cc, passes.cc) ---
-//
-// Install per-category hooks. Each hook receives the corresponding entries
-// from a PluginInfo when triton_register_plugin is called (or, if the plugin
-// was registered before the hook was set, the hook is invoked immediately
-// upon installation). This separation is needed because ops / passes /
-// dialects are applied at different points in the main module:
-//   - ops   → init_triton_ir   (ir.cc, on the TritonOpBuilder pybind class)
-//   - passes→ init_triton_passes (passes.cc, on the passes submodule)
-//   - dialects → load_dialects  (ir.cc, on the DialectRegistry)
-TRITON_PLUGIN_API void
-set_op_registration_hook(std::function<void(const OpInfo &)> hook);
+#include <functional>
 
-TRITON_PLUGIN_API void
-set_pass_registration_hook(std::function<void(const PassInfo &)> hook);
+/// Push a plugin's PluginInfo into the main module. If the per-category hooks
+/// are already installed, ops / passes / dialects are applied immediately;
+/// otherwise the info is queued and flushed when the hooks are installed.
+__attribute__((visibility("default")))
+void triton_register_plugin(PluginInfo *info);
 
-TRITON_PLUGIN_API void
-set_dialect_registration_hook(std::function<void(const DialectInfo &)> hook);
+/// Per-category hooks installed by the main module (init_triton_ir /
+/// init_triton_passes / load_dialects). Installing a hook also flushes any
+/// plugins registered before the hook was set.
+__attribute__((visibility("default")))
+void set_op_registration_hook(std::function<void(const OpInfo &)> hook);
+__attribute__((visibility("default")))
+void set_pass_registration_hook(std::function<void(const PassInfo &)> hook);
+__attribute__((visibility("default")))
+void set_dialect_registration_hook(
+    std::function<void(const DialectInfo &)> hook);
 
-// Returns all plugins registered so far. Used by load_dialects to iterate
-// dialect registrations at context-creation time (which happens after all
-// plugins have been imported).
-TRITON_PLUGIN_API const std::vector<PluginInfo *> &get_registered_plugins();
+/// Returns all plugins registered so far via triton_register_plugin(). Used
+/// by load_dialects to iterate dialect registrations at context-creation
+/// time.
+__attribute__((visibility("default")))
+const std::vector<PluginInfo *> &get_registered_plugins();
 
-} // namespace triton::plugin
+} // namespace mlir::triton::plugin
+
+/// The public entry point for loading a Triton plugin.
+///
+/// When a plugin is loaded by the driver, Triton will call this entry point to
+/// obtain information about the plugin and how to load it. This function must
+/// to be implemented by the plugin.
+///
+/// Triton expects this function to return a pointer to a valid \c PluginInfo
+/// struct. Because plugins are loaded in-process permanently, the \c PluginInfo
+/// struct has a lifetime spanning the duration of the program; thus, no
+/// deallocation function is required from the plugin. As an extra precaution
+/// against leaks, return a pointer to a static struct:
+///
+/// ```
+/// mlir::triton::plugin::PluginInfo *tritonGetPluginInfo() {
+///   static mlir::triton::plugin::PluginInfo info = { ... };
+///   return &info;
+/// }
+/// ```
+extern "C" mlir::triton::plugin::PluginInfo *LLVM_ATTRIBUTE_WEAK
+tritonGetPluginInfo();
+
+#endif // TRITON_PLUGIN_UTILS_H

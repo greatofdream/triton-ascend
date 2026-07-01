@@ -258,7 +258,7 @@ void init_triton_ir(py::module &&m) {
     // Register dialects from plugins (e.g. triton-distributed's
     // DistributedDialect). Plugins must have been imported before this
     // function is called (i.e. before the first kernel compilation).
-    for (auto *info : triton::plugin::get_registered_plugins()) {
+    for (auto *info : mlir::triton::plugin::get_registered_plugins()) {
       for (int i = 0; i < info->numDialects; ++i) {
         info->dialects[i].registerDialect(&registry);
       }
@@ -1766,8 +1766,8 @@ void init_triton_ir(py::module &&m) {
   // Install hook so plugins loaded via Python import (libtriton_dist etc.)
   // can push their ops onto this module's TritonOpBuilder pybind class.
   // Flushes any plugins registered before init_triton_ir ran.
-  triton::plugin::set_op_registration_hook(
-      [](const triton::plugin::OpInfo &op) {
+  mlir::triton::plugin::set_op_registration_hook(
+      [](const mlir::triton::plugin::OpInfo &op) {
         auto *builderClass = ir::getBuilderClass();
         if (!builderClass)
           return;
