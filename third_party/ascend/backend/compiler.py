@@ -29,7 +29,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from triton._C.libtriton import ir, passes, ascend
 from triton.backends.ascend.utils import (
@@ -176,6 +176,14 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             auto_blockify_size = 1
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
+
+        # Allow plugins to install extra conversion passes before the Ascend
+        # ttir -> linalg lowering. This is the 3.2.2 substitute for triton
+        # 3.7's knobs.runtime.add_stages_inspection_hook.
+        add_pre_ttadapter_passes = getattr(opt, "add_pre_ttadapter_passes", None)
+        if add_pre_ttadapter_passes is not None:
+            add_pre_ttadapter_passes(pm)
+
         ascend.passes.ttir.add_auto_blockify(
             pm,
             auto_blockify_size
@@ -991,6 +999,14 @@ class NPUOptions:
     # superblocking factor
     superblock_factor: int = 1
 
+    # Plugin hook (invoked in ttir_to_linalg before the Ascend ttir -> linalg
+    # lowering). Lets extensions like triton-dist insert conversion passes
+    # (e.g. convert-triton-distributed-to-hivm) into the Ascend pipeline
+    # without monkey-patching the backend. Defaults to None = no hook.
+    # This is the 3.2.2 substitute for triton 3.7's
+    # knobs.runtime.add_stages_inspection_hook.
+    add_pre_ttadapter_passes: Optional[Callable] = None
+
     def __post_init__(self):
         # Parse compile_mode and set related fields
         if self.compile_mode == "simd":
@@ -1009,7 +1025,14 @@ class NPUOptions:
             object.__setattr__(self, "shared_mem_dynamic_size", 221184)
 
     def hash(self):
-        key = "_".join([f"{name}-{val}" for name, val in self.__dict__.items()])
+        # Skip callable fields (plugin hooks) so the cache key stays stable
+        # across sessions — a hook's identity is not part of the compilation
+        # semantics.
+        key = "_".join([
+            f"{name}-{val}"
+            for name, val in self.__dict__.items()
+            if not callable(val)
+        ])
         key = "_".join([key, get_cann_version_file_hash()])
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
