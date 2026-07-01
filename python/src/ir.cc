@@ -1,4 +1,4 @@
-#include "ir.h"
+#include "ir_binding.h"
 
 #include <optional>
 #include <pybind11/cast.h>
@@ -41,7 +41,6 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
 
-#include "ir.h"
 namespace {
 
 namespace py = pybind11;

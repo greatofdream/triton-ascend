@@ -25,7 +25,7 @@
 // todo: this code will be removed in version 530.
 #include "ascend/include/TritonAffinityOpt/Passes.h"
 
-#include "ir.h" // TritonOpBuilder
+#include "ir_binding.h" // TritonOpBuilder + getBuilderClass
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include <pybind11/pybind11.h>

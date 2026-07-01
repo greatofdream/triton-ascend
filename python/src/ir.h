@@ -3,11 +3,6 @@
 #include "mlir/IR/Builders.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include <memory>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
-#include <pybind11/stl_bind.h>
-
-namespace py = pybind11;
 
 using namespace mlir;
 using namespace triton;
@@ -100,7 +95,3 @@ private:
   bool lineInfoEnabled = !triton::tools::getBoolEnv("TRITON_DISABLE_LINE_INFO");
   std::string compile_mode;
 };
-
-namespace ir {
-extern py::class_<TritonOpBuilder> *getBuilderClass();
-} // namespace ir
