@@ -1098,6 +1098,11 @@ class AscendBackend(BaseBackend):
             else:
                 stages["npubin"] = (
                     lambda src, metadata: linalg_to_bin_enable_npu_compile_A2_A3(src, metadata, options))
+            # Allow plugins to rewrite stage callables (e.g. insert a custom
+            # pass into make_ttir). This is the 3.2.2/3.5 backport of triton
+            # 3.7's knobs.runtime.add_stages_inspection_hook.
+            if knobs.runtime.add_stages_inspection_hook is not None:
+                knobs.runtime.add_stages_inspection_hook(self, stages, options, language, None)
         else:
             raise NotImplementedError(f"Backend '{self.target.backend}' is not supported. "
                                       "Please ensure the target backend is set to 'npu'.")
