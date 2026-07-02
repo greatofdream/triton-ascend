@@ -669,6 +669,29 @@ class CMakeBuild(build_ext):
                     pass
             print(f"Copied triton-opt to {triton_opt_dst}")
 
+        # Copy include/ to triton/include/ so downstream packages (e.g.
+        # triton-dist) can compile against triton's headers (PluginUtils.h,
+        # ir.h, tablegen'd .h.inc, etc.) without needing the source submodule.
+        # Merge source include/ + build-dir include/ (tablegen output).
+        include_dst = os.path.join(os.path.dirname(extdir), "include")
+        include_src = os.path.join(self.base_dir, "include")
+        if os.path.exists(include_src):
+            shutil.copytree(include_src, include_dst, dirs_exist_ok=True)
+        build_include = os.path.join(cmake_dir, "include")
+        if os.path.exists(build_include):
+            shutil.copytree(build_include, include_dst, dirs_exist_ok=True)
+        # Also copy python/src/ headers (ir.h, ir_binding.h, passes.h) that
+        # downstream packages need at compile time. Place under
+        # include/python/src/ so a single include_directories(triton/include)
+        # resolves both triton/... and python/src/... includes.
+        py_src_dst = os.path.join(include_dst, "python", "src")
+        os.makedirs(py_src_dst, exist_ok=True)
+        for hdr in ["ir.h", "ir_binding.h", "passes.h"]:
+            py_src_hdr = os.path.join(self.base_dir, "python", "src", hdr)
+            if os.path.exists(py_src_hdr):
+                shutil.copy2(py_src_hdr, os.path.join(py_src_dst, hdr))
+        print(f"Copied include/ to {include_dst}")
+
 
 def download_and_copy_dependencies():
     nvidia_version_path = os.path.join(get_base_dir(), "cmake", "nvidia-toolchain-version.json")
@@ -1047,6 +1070,16 @@ setup(
     long_description=long_description,
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
+    package_data={
+        "triton": [
+            "_C/*.so",
+            "_C/*.pyd",
+            "include/triton/**/*",
+            "include/mlir/**/*",
+            "include/llvm/**/*",
+            "include/python/**/*",
+        ],
+    },
     entry_points=get_entry_points(),
     include_package_data=True,
     ext_modules=[CMakeExtension("triton", "triton/_C/")],
