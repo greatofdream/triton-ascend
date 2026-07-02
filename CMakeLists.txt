@@ -257,6 +257,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
 
   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
   get_property(triton_plugins GLOBAL PROPERTY TRITON_PLUGINS)
+  # TritonPluginUtils is a STATIC lib (not an OBJECT lib via add_triton_library)
+  # so plugin extensions don't accidentally link their own copy of PushState.
+  list(APPEND triton_libs TritonPluginUtils)
   set(TRITON_LIBRARIES
     ${triton_libs}
     ${triton_plugins}
