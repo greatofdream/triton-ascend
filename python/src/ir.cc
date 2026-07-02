@@ -1,5 +1,6 @@
 #include "ir_binding.h"
 
+#include <cstdio>
 #include <optional>
 #include <pybind11/cast.h>
 #include <pybind11/functional.h>
@@ -1993,6 +1994,8 @@ void init_triton_ir(py::module &&m) {
   mlir::triton::plugin::set_op_registration_hook(
       [](const mlir::triton::plugin::OpInfo &op) {
         auto *builderClass = ir::getBuilderClass();
+        fprintf(stderr, "[PLUGIN] op_hook: op=%s builderClass=%p\n",
+                op.name, (void *)builderClass);
         if (!builderClass)
           return;
         builderClass->def(
@@ -2003,6 +2006,7 @@ void init_triton_ir(py::module &&m) {
               cb(self, args);
               return args[0];
             });
+        fprintf(stderr, "[PLUGIN] op_hook: def(%s) done\n", op.name);
       });
 }
 

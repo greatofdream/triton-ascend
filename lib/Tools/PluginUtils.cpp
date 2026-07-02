@@ -3,6 +3,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Error.h"
 
+#include <cstdio>
 #include <functional>
 #include <mutex>
 
@@ -220,10 +221,16 @@ PushState &pushState() {
 
 void applyOps(mlir::triton::plugin::PluginInfo *info) {
   auto &s = pushState();
-  if (!s.op_hook)
+  if (!s.op_hook) {
+    fprintf(stderr, "[PLUGIN] applyOps: SKIP (op_hook null) plugin=%s numOps=%zu\n",
+            info->pluginName, info->numOps);
     return;
-  for (size_t i = 0; i < info->numOps; ++i)
+  }
+  for (size_t i = 0; i < info->numOps; ++i) {
+    fprintf(stderr, "[PLUGIN] applyOps: calling op_hook for op=%s\n",
+            info->ops[i].name);
     s.op_hook(info->ops[i]);
+  }
 }
 
 void applyPasses(mlir::triton::plugin::PluginInfo *info) {
@@ -251,6 +258,9 @@ void triton_register_plugin(PluginInfo *info) {
     return;
   auto &s = pushState();
   std::lock_guard<std::mutex> lock(s.mutex);
+  fprintf(stderr, "[PLUGIN] triton_register_plugin: plugin=%s numOps=%zu numPasses=%zu numDialects=%zu op_hook=%d\n",
+          info->pluginName, info->numOps, info->numPasses, info->numDialects,
+          (bool)s.op_hook);
   s.registered.push_back(info);
   applyOps(info);
   applyPasses(info);
@@ -261,6 +271,8 @@ void set_op_registration_hook(
     std::function<void(const OpInfo &)> hook) {
   auto &s = pushState();
   std::lock_guard<std::mutex> lock(s.mutex);
+  fprintf(stderr, "[PLUGIN] set_op_registration_hook: registered=%zu\n",
+          s.registered.size());
   s.op_hook = std::move(hook);
   for (auto *info : s.registered)
     applyOps(info);
