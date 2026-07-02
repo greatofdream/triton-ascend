@@ -210,8 +210,12 @@ struct PushState {
 };
 
 PushState &pushState() {
-  static PushState s;
-  return s;
+  // Leak intentionally: PushState holds std::function hooks that may capture
+  // pybind objects (py::module_). Destroying them at exit crashes because
+  // the Python interpreter is already gone (module_dealloc → _Py_GetConfig
+  // → SIGSEGV). Using new avoids the exit-time destructor.
+  static PushState *s = new PushState();
+  return *s;
 }
 
 void applyOps(mlir::triton::plugin::PluginInfo *info) {
