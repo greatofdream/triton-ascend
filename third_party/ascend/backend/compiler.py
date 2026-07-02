@@ -63,6 +63,7 @@ from triton.backends.compiler import (
     BaseBackend,
     GPUTarget,
 )
+from triton import knobs
 from triton.runtime import driver
 from triton.runtime.cache import _base32, get_dump_manager
 from triton.tools.get_ascend_devices import is_compile_on_910_95
