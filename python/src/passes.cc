@@ -6,6 +6,8 @@
 #include "triton/Analysis/Allocation.h"
 #include "triton/Analysis/Membar.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
+
+#include <cstdio>
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Gluon/Transforms/Passes.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
@@ -121,9 +123,8 @@ void init_gluon_passes(py::module &&m) {
 void init_plugin_passes(py::module &&m) {
   for (const auto &plugin : mlir::triton::plugin::loadPlugins()) {
     for (const auto &pass : plugin.listPasses()) {
-      std::string name = std::string("add_") + pass.name;
       m.def(
-          name.c_str(),
+          pass.name,
           [pass](mlir::PassManager &pm,
                  const std::vector<std::string> &args) { pass.addPass(&pm, args); },
           py::arg("pm"), py::arg("args") = std::vector<std::string>{});
@@ -147,10 +148,10 @@ void init_triton_passes(py::module &&m) {
   init_plugin_passes(std::move(plugin_m));
   mlir::triton::plugin::set_pass_registration_hook(
       [plugin_m](const mlir::triton::plugin::PassInfo &pass) mutable {
-        std::string name = std::string("add_") + pass.name;
+        fprintf(stderr, "[PLUGIN] pass_hook: def %s\n", pass.name);
         auto cb = pass.addPass;
         plugin_m.def(
-            name.c_str(),
+            pass.name,
             [cb](mlir::PassManager &pm,
                  const std::vector<std::string> &args) { cb(&pm, args); },
             py::arg("pm"), py::arg("args") = std::vector<std::string>{});
