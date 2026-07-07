@@ -18,5 +18,6 @@ add_triton_library(TritonTools
 # STATIC (not OBJECT) so only libtriton.so links it via TRITON_LIBRARIES;
 # plugin .so files include only the header (declarations) and resolve
 # symbols against libtriton.so at runtime -> single shared PushState.
-add_library(TritonPluginUtils STATIC PluginUtils.cpp)
+add_library(TritonPluginUtils STATIC PluginUtils.cpp PluginPush.cpp)
 target_link_libraries(TritonPluginUtils PUBLIC MLIRIR MLIRLLVMDialect)
+target_compile_definitions(TritonPluginUtils PRIVATE TRITON_VERSION="3.5.0")

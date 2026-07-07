@@ -39,6 +39,7 @@
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "triton/Tools/PluginUtils.h"
+#include "triton/Tools/PluginPush.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
 

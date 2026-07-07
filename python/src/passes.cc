@@ -15,6 +15,7 @@
 #include "triton/Dialect/TritonInstrument/Transforms/Passes.h"
 #include "triton/Target/LLVMIR/Passes.h"
 #include "triton/Tools/PluginUtils.h"
+#include "triton/Tools/PluginPush.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
