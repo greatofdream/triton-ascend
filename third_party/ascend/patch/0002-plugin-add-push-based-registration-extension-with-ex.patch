@@ -1,0 +1,334 @@
+From ab37926eabd63fc7470be412ba85fdb4252cc2a3 Mon Sep 17 00:00:00 2001
+From: zaq15csdn <zhangaiqiang1@huawei.com>
+Date: Mon, 13 Jul 2026 20:31:01 +0800
+Subject: [PATCH 2/3] [plugin] add push-based registration extension with
+ extend_with (PR 10775)
+
+---
+ CMakeLists.txt           |  8 +++---
+ lib/Tools/CMakeLists.txt | 13 ++++++----
+ python/setup.py          | 48 ++++++++++++++++++++++++++++++++++-
+ python/src/ir.cc         | 54 ++++++++++++++++++++++++++++++----------
+ python/src/ir_binding.cc | 22 ++++++++++++++++
+ python/src/ir_binding.h  | 12 +++++++++
+ python/src/passes.cc     | 35 ++++++++++++++++++--------
+ 7 files changed, 158 insertions(+), 34 deletions(-)
+ create mode 100644 python/src/ir_binding.cc
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 393ad1fc0..72c94a183 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -217,10 +217,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
+ 
+   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
+   get_property(triton_plugins GLOBAL PROPERTY TRITON_PLUGINS)
+-  # TritonPluginUtils is a STATIC lib: loadPlugins()/registerInfo() are called
+-  # by libtriton.so (ir.cc/passes.cc), so the linker keeps PluginUtils.o.
+-  # Plugins inject via TritonPlugin::registerInfo and refresh passes from
+-  # Python (passes.refresh_plugin_passes).
++  # TritonPluginUtils is a STATIC lib: loadPlugins()/TritonPlugin::load are
++  # called by libtriton.so (ir.cc/passes.cc extend_with), so the linker
++  # keeps PluginUtils.o. Plugins are loaded via extend_with (dlopen).
+   list(APPEND triton_libs TritonPluginUtils)
+   set(TRITON_LIBRARIES
+     ${triton_libs}
+@@ -292,6 +291,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
+   add_compile_definitions(TRITON_BACKENDS_TUPLE=${TRITON_BACKENDS_TUPLE})
+   add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
+                   ${PYTHON_SRC_PATH}/ir.cc
++                  ${PYTHON_SRC_PATH}/ir_binding.cc
+                   ${PYTHON_SRC_PATH}/../triton/extension/buffer/src/buffer_ir.cc
+                   ${PYTHON_SRC_PATH}/passes.cc
+                   ${PYTHON_SRC_PATH}/interpreter.cc
+diff --git a/lib/Tools/CMakeLists.txt b/lib/Tools/CMakeLists.txt
+index 228682b93..0591ddcc4 100644
+--- a/lib/Tools/CMakeLists.txt
++++ b/lib/Tools/CMakeLists.txt
+@@ -1,6 +1,6 @@
+ add_triton_library(TritonTools
+   LinearLayout.cpp
+-  PluginUtils.cpp
++  # PluginUtils.cpp is built as TritonPluginUtils STATIC (see below).
+ 
+   DEPENDS
+ 
+@@ -10,7 +10,10 @@ add_triton_library(TritonTools
+   f2reduce
+ )
+ 
+-# triton-ascend 3.5 lacks triton/Version.h (upstream 3.7 generates it via
+-# CMake configure_file). Define TRITON_VERSION here so PluginUtils.cpp's
+-# plugin version checks compile.
+-target_compile_definitions(TritonTools PRIVATE TRITON_VERSION="3.5.0")
++# STATIC (not OBJECT) so only libtriton.so links it via TRITON_LIBRARIES;
++# plugin .so files include only the header (declarations) and resolve
++# symbols (TritonPlugin::load, loadPlugins, etc.) against libtriton.so
++# at runtime -> single shared plugins list.
++add_library(TritonPluginUtils STATIC PluginUtils.cpp)
++target_link_libraries(TritonPluginUtils PUBLIC MLIRIR MLIRLLVMDialect)
++target_compile_definitions(TritonPluginUtils PRIVATE TRITON_VERSION="3.5.0")
+diff --git a/python/setup.py b/python/setup.py
+index 34be88af4..7cb4c435a 100644
+--- a/python/setup.py
++++ b/python/setup.py
+@@ -595,6 +595,43 @@ with open(nvidia_version_path, "r") as nvidia_version_file:
+     # parse this json file to get the version of the nvidia toolchain
+     NVIDIA_TOOLCHAIN_VERSION = json.load(nvidia_version_file)
+ 
++        # Copy include/ to triton/include/ so downstream packages can compile
++        # against triton's headers without needing the source submodule.
++        # Merge source include/ + build-dir include/ (tablegen output).
++        include_dst = os.path.join(os.path.dirname(extdir), "include")
++        include_src = os.path.join(self.base_dir, "include")
++        if os.path.exists(include_src):
++            shutil.copytree(include_src, include_dst, dirs_exist_ok=True)
++        build_include = os.path.join(cmake_dir, "include")
++        if os.path.exists(build_include):
++            shutil.copytree(build_include, include_dst, dirs_exist_ok=True)
++        # Also copy python/src/ headers (ir.h, ir_binding.h, passes.h) that
++        # downstream packages need at compile time.
++        py_src_dst = os.path.join(include_dst, "python", "src")
++        os.makedirs(py_src_dst, exist_ok=True)
++        for hdr in ["ir.h", "ir_binding.h", "passes.h"]:
++            py_src_hdr = os.path.join(self.base_dir, "python", "src", hdr)
++            if os.path.exists(py_src_hdr):
++                shutil.copy2(py_src_hdr, os.path.join(py_src_dst, hdr))
++        # Also copy third_party/proton/Dialect/include/ so downstream
++        # packages don't need the proton submodule.
++        proton_dialect_src = os.path.join(self.base_dir, "third_party", "proton", "Dialect", "include")
++        if os.path.exists(proton_dialect_src):
++            proton_dialect_dst = os.path.join(include_dst, "third_party", "proton", "Dialect", "include")
++            shutil.copytree(proton_dialect_src, proton_dialect_dst, dirs_exist_ok=True)
++        # Also copy proton tablegen output (.h.inc) from the build dir.
++        proton_build_inc = os.path.join(cmake_dir, "third_party", "proton", "Dialect", "include")
++        if os.path.exists(proton_build_inc):
++            proton_build_dst = os.path.join(include_dst, "third_party", "proton", "Dialect", "include")
++            shutil.copytree(proton_build_inc, proton_build_dst, dirs_exist_ok=True)
++        # Also copy third_party/ascend/include/ (Utils.h, etc.) so downstream
++        # packages don't need the ascend submodule.
++        ascend_include_src = os.path.join(self.base_dir, "third_party", "ascend", "include")
++        if os.path.exists(ascend_include_src):
++            ascend_include_dst = os.path.join(include_dst, "ascend", "include")
++            shutil.copytree(ascend_include_src, ascend_include_dst, dirs_exist_ok=True)
++        print(f"Copied include/ to {include_dst}")
++
+ 
+ def get_platform_dependent_src_path(subdir):
+     return lambda platform, version: (
+@@ -759,6 +796,15 @@ class BuildWheel(bdist_wheel):
+ 
+ 
+ package_data = {
++    "triton": [
++        "_C/*.so",
++        "_C/*.pyd",
++        "include/triton/**/*",
++        "include/mlir/**/*",
++        "include/llvm/**/*",
++        "include/python/**/*",
++        "include/third_party/**/*",
++    ],
+     "triton/tools": ["compile.h", "compile.c"], **{f"triton/backends/{b.name}": b.package_data
+                                                    for b in backends}, "triton/language/extra": sum(
+         (b.language_package_data for b in backends), [])
+@@ -909,7 +955,7 @@ setup(
+     author_email="phil@openai.com",
+     description="A language and compiler for custom Deep Learning operations",
+     long_description=long_description,
+-    packages=get_packages(),
++    packages=list(get_packages()),
+     entry_points=get_entry_points(),
+     package_data=package_data,
+     include_package_data=True,
+diff --git a/python/src/ir.cc b/python/src/ir.cc
+index 58a0f47b1..4e4812604 100644
+--- a/python/src/ir.cc
++++ b/python/src/ir.cc
+@@ -36,6 +36,7 @@
+ #include "triton/Tools/PluginUtils.h"
+ #include "triton/Tools/Sys/GetEnv.hpp"
+ #include "llvm/Support/SourceMgr.h"
++#include <memory>
+ 
+ namespace {
+ 
+@@ -247,6 +248,20 @@ void init_triton_ir(py::module &&m) {
+                                          py::module_local())
+       .def(py::init<llvm::SourceMgr &, MLIRContext *>());
+ 
++  static std::vector<mlir::triton::plugin::TritonPlugin> plugins;
++  m.def(
++      "extend_dialects_with",
++      [](const std::string &libPath) {
++        auto pluginOrErr = mlir::triton::plugin::TritonPlugin::load(libPath);
++        if (!pluginOrErr) {
++          std::string errMsg = llvm::toString(pluginOrErr.takeError());
++          throw std::runtime_error(errMsg);
++        }
++        plugins.push_back(std::move(*pluginOrErr));
++      },
++      "Given a path to a Triton extension, register any dialects to be loaded "
++      "in `load_dialects`.");
++
+   m.def("load_dialects", [](MLIRContext &context) {
+     DialectRegistry registry;
+     registry.insert<TritonDialect, ::mlir::triton::gpu::TritonGPUDialect,
+@@ -258,9 +273,7 @@ void init_triton_ir(py::module &&m) {
+     registerBuiltinDialectTranslation(registry);
+     registerLLVMDialectTranslation(registry);
+     mlir::LLVM::registerInlinerInterface(registry);
+-    // Register dialects from plugins.
+-    // pull-based: loadPlugins() (TRITON_PLUGIN_PATHS / dlopen)
+-    for (const auto &plugin : mlir::triton::plugin::loadPlugins()) {
++    for (const auto &plugin : plugins) {
+       plugin.registerDialects(registry);
+     }
+     context.appendDialectRegistry(registry);
+@@ -1763,16 +1776,31 @@ void init_triton_ir(py::module &&m) {
+       },
+       py::call_guard<py::gil_scoped_release>());
+ 
+-  // Register custom ops from plugins.
+-  // pull-based: loadPlugins() (TRITON_PLUGIN_PATHS / dlopen)
+-  for (const auto &plugin : mlir::triton::plugin::loadPlugins()) {
+-    for (const auto &op : plugin.listOps()) {
+-      builderClass.def(op.name,
+-                       [op](TritonOpBuilder &self, std::vector<Value> args) {
+-                         op.addOp(self, args);
+-                       });
+-    }
+-  }
++  // Add an `extend_with` static method that dynamically loads a plugin and
++  // registers its custom operations as builder methods.
++  auto builderPtr = std::make_shared<py::class_<TritonOpBuilder>>(builderClass);
++  builderClass.def_static(
++      "extend_with",
++      [builderPtr](const std::string &path) {
++        auto pluginOrErr = mlir::triton::plugin::TritonPlugin::load(path);
++        if (!pluginOrErr) {
++          std::string errMsg = llvm::toString(pluginOrErr.takeError());
++          throw std::runtime_error(errMsg);
++        }
++        auto plugin = std::move(*pluginOrErr);
++        py::gil_scoped_acquire acquire;
++        for (const auto &op : plugin.listOps()) {
++          std::string wrapped = std::string("create_") + op.name;
++          builderPtr->def(wrapped.c_str(),
++                          [op](TritonOpBuilder &self, std::vector<Value> args) {
++                            args.insert(args.begin(), Value());
++                            op.addOp(self, args);
++                            return args[0];
++                          });
++        }
++      },
++      "Given a path to a Triton extension, load it and create builder methods "
++      "for each operation.");
+ }
+ 
+ void init_triton_env_vars(py::module &m) {
+diff --git a/python/src/ir_binding.cc b/python/src/ir_binding.cc
+new file mode 100644
+index 000000000..01c3eb3d2
+--- /dev/null
++++ b/python/src/ir_binding.cc
+@@ -0,0 +1,22 @@
++#include "python/src/ir_binding.h"
++
++namespace ir {
++
++// Cast helpers: cast runs here in libtriton.so (same module as the
++// module_local Value/Type/OpState pybind registrations) so type info is
++// visible. Plugin .so files call these to avoid cross-module cast failures.
++mlir::Value pyobj_to_value(py::object obj) {
++  return py::cast<mlir::Value>(obj);
++}
++mlir::Type pyobj_to_type(py::object obj) { return py::cast<mlir::Type>(obj); }
++py::object value_to_pyobj(mlir::Value v) { return py::cast(v); }
++py::object type_to_pyobj(mlir::Type t) { return py::cast(t); }
++py::object opstate_to_pyobj(mlir::OpState op) { return py::cast(op); }
++std::vector<mlir::Value> pyobj_to_vecval(py::object obj) {
++  return py::cast<std::vector<mlir::Value>>(obj);
++}
++std::vector<mlir::Type> pyobj_to_vectype(py::object obj) {
++  return py::cast<std::vector<mlir::Type>>(obj);
++}
++
++} // namespace ir
+diff --git a/python/src/ir_binding.h b/python/src/ir_binding.h
+index e574333a8..556b9697f 100644
+--- a/python/src/ir_binding.h
++++ b/python/src/ir_binding.h
+@@ -12,4 +12,16 @@ namespace py = pybind11;
+ 
+ namespace ir {
+ extern py::class_<TritonOpBuilder> *getBuilderClass();
++
++// Cast helpers: must run in libtriton.so (same module as the Value/Type/
++// OpState pybind registrations, which are module_local). Plugin .so files
++// use these to convert py::object <-> C++ types without cross-module cast
++// failures (module_local type info is not visible across modules).
++mlir::Value pyobj_to_value(py::object obj);
++mlir::Type pyobj_to_type(py::object obj);
++py::object value_to_pyobj(mlir::Value v);
++py::object type_to_pyobj(mlir::Type t);
++py::object opstate_to_pyobj(mlir::OpState op);
++std::vector<mlir::Value> pyobj_to_vecval(py::object obj);
++std::vector<mlir::Type> pyobj_to_vectype(py::object obj);
+ } // namespace ir
+diff --git a/python/src/passes.cc b/python/src/passes.cc
+index 2838e31ab..b10ce4305 100644
+--- a/python/src/passes.cc
++++ b/python/src/passes.cc
+@@ -11,6 +11,7 @@
+ #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
+ #include "triton/Target/LLVMIR/Passes.h"
+ #include "triton/Tools/PluginUtils.h"
++#include <memory>
+ #include <pybind11/pybind11.h>
+ #include <pybind11/stl.h>
+ 
+@@ -94,17 +95,29 @@ void init_triton_passes_llvmir(py::module &&m) {
+ }
+ 
+ void init_plugin_passes(py::module &m) {
+-  for (const auto &plugin : mlir::triton::plugin::loadPlugins()) {
+-    for (const auto &pass : plugin.listPasses()) {
+-      std::string wrapped = std::string("add_") + pass.name;
+-      m.def(
+-          wrapped.c_str(),
+-          [pass](mlir::PassManager &pm, std::vector<std::string> args) {
+-            pass.addPass(&pm, args);
+-          },
+-          py::arg("pm"), py::arg("args") = std::vector<std::string>());
+-    }
+-  }
++  auto m_ptr = std::make_shared<py::module>(m);
++  m.def(
++      "extend_with",
++      [m_ptr](const std::string &path) {
++        auto pluginOrErr = mlir::triton::plugin::TritonPlugin::load(path);
++        if (!pluginOrErr) {
++          std::string errMsg = llvm::toString(pluginOrErr.takeError());
++          throw std::runtime_error(errMsg);
++        }
++        auto plugin = std::move(*pluginOrErr);
++        py::gil_scoped_acquire acquire;
++        for (const auto &pass : plugin.listPasses()) {
++          std::string wrapped = std::string("add_") + pass.name;
++          m_ptr->def(
++              wrapped.c_str(),
++              [pass](mlir::PassManager &pm, std::vector<std::string> args) {
++                pass.addPass(&pm, args);
++              },
++              py::arg("pm"), py::arg("args") = std::vector<std::string>());
++        }
++      },
++      "Given a path to a Triton extension, load it and create `add_*` "
++      "functions for each pass.");
+ }
+ 
+ void init_triton_passes(py::module &&m) {
+-- 
+2.47.3
+
