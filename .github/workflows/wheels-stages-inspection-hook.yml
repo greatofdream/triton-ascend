@@ -1,0 +1,161 @@
+name: Wheels (stages-inspection-hook)
+
+# Build wheels from feature/stages-inspection-hook branch directly
+# (no patches needed — plugin changes are already committed).
+on:
+  workflow_dispatch:
+    inputs:
+      upload_obs:
+        description: 'Upload wheels to OBS (requires NIGHTLY_OBS_AK/SK secrets)'
+        type: boolean
+        default: false
+      create_release:
+        description: 'Create GitHub Release with wheel assets'
+        type: boolean
+        default: true
+
+concurrency:
+  group: wheels-stages-inspection-hook-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: read-all
+
+jobs:
+
+  Build-Wheels:
+    timeout-minutes: 360
+    runs-on: ${{ matrix.config.runs_on }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+        - {runs_on: 'ubuntu-22.04', arch: 'x86_64'}
+        - {runs_on: 'ubuntu-22.04-arm', arch: 'aarch64'}
+        python: ["cp311", "cp312"]
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+
+      - name: Prune stale docker containers
+        run: docker container prune -f
+
+      - name: Checkout feature/stages-inspection-hook
+        uses: actions/checkout@v4
+        with:
+          ref: feature/stages-inspection-hook
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache build dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.triton-cache
+            ${{ github.workspace }}/.ccache
+          key: wheels-stages-inspection-hook-${{ matrix.config.arch }}-${{ matrix.python }}-${{ hashFiles('cmake/llvm-hash.txt', 'cmake/json-version.txt', 'cmake/nvidia-toolchain-version.json') }}
+          restore-keys: |
+            wheels-stages-inspection-hook-${{ matrix.config.arch }}-${{ matrix.python }}-
+
+      - name: Build wheels
+        run: |
+          python --version
+          python3 -m pip install cibuildwheel --upgrade --user
+          NUM_PROCS=$(nproc)
+          if [ "$NUM_PROCS" -lt 1 ]; then NUM_PROCS=1; fi
+
+          # Pre-create cache dirs on host so cibuildwheel's bind-mount sees them
+          # at /project/.triton-cache and /project/.ccache inside the container.
+          mkdir -p .triton-cache .ccache
+
+          BUILD_DATE=$(date -u +%Y%m%d)
+
+          export CIBW_ENVIRONMENT="MAX_JOBS=${NUM_PROCS} \
+            TRITON_BUILD_WITH_CLANG_LLD=true \
+            TRITON_BUILD_PROTON=OFF \
+            TRITON_WHEEL_NAME=triton-ascend \
+            TRITON_EXT_ENABLED=1 \
+            TRITON_APPEND_CMAKE_ARGS='-DTRITON_BUILD_UT=OFF' \
+            TRITON_WHEEL_VERSION_SUFFIX=+hook${BUILD_DATE} \
+            IS_MANYLINUX=TRUE \
+            TRITON_HOME=/project/.triton-cache \
+            TRITON_BUILD_WITH_CCACHE=true \
+            CCACHE_DIR=/project/.ccache \
+            CCACHE_COMPRESS=true"
+
+          # many_linux_2_28 image comes with GCC 12.2.1, but not clang.
+          # With this install, it gets clang 16.0.6.
+          export CIBW_BEFORE_ALL="dnf install clang lld ccache -y"
+
+          if [[ ${{ matrix.config.arch }} == 'x86_64' ]]; then
+            export CIBW_MANYLINUX_X86_64_IMAGE="quay.io/pypa/manylinux_2_28_${{ matrix.config.arch }}:latest"
+          else
+            export CIBW_MANYLINUX_AARCH64_IMAGE="quay.io/pypa/manylinux_2_28_${{ matrix.config.arch }}:latest"
+          fi
+
+          export CIBW_BUILD="${{ matrix.python }}-manylinux_${{ matrix.config.arch }}"
+
+          python3 -m cibuildwheel . --output-dir wheelhouse
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-stages-inspection-hook-${{ matrix.config.arch }}-${{ matrix.python }}
+          path: ./wheelhouse/*.whl
+
+      - name: Setup obsutil and upload to OBS
+        if: ${{ inputs.upload_obs }}
+        shell: bash
+        env:
+          AK: ${{ secrets.NIGHTLY_OBS_AK }}
+          SK: ${{ secrets.NIGHTLY_OBS_SK }}
+          ARCH: ${{ matrix.config.arch == 'x86_64' && 'amd64' || 'arm64' }}
+        run: |
+          set -eu
+          if [ -z "${AK}" ] || [ -z "${SK}" ]; then
+            echo "OBS credentials are empty. Skip OBS upload."
+            exit 0
+          fi
+          curl -fL "https://obs-community.obs.cn-north-1.myhuaweicloud.com/obsutil/current/obsutil_linux_${ARCH}.tar.gz" -o obsutil.tar.gz
+          gzip -t obsutil.tar.gz || { echo "obsutil.tar.gz is not a valid gzip"; exit 1; }
+          tar xzf obsutil.tar.gz
+          rm -f obsutil.tar.gz
+          mv obsutil_linux_* obsutil
+          obsutil/obsutil config -i="${AK}" -k="${SK}" -e=https://obs.cn-north-4.myhuaweicloud.com
+          OBS_DIR="obs://ascend-artifcat-packages/pypi/packages/ascend/repos/pypi/nightly/triton-ascend/"
+          obsutil/obsutil cp -u wheelhouse/*.whl "${OBS_DIR}"
+
+  Release:
+    needs: Build-Wheels
+    runs-on: ubuntu-22.04
+    if: always()
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-stages-inspection-hook-*
+          merge-multiple: true
+          path: wheels
+
+      - name: Create GitHub Release
+        if: ${{ inputs.create_release && needs.Build-Wheels.result == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BUILD_DATE=$(date -u +%Y%m%d)
+          TAG="stages-inspection-hook-${BUILD_DATE}-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" wheels/*.whl \
+            --title "triton-ascend (stages-inspection-hook) ${BUILD_DATE}" \
+            --notes "Automated build from feature/stages-inspection-hook branch." \
+            --target feature/stages-inspection-hook
